@@ -74,28 +74,36 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
     // Wait for workers to initialize per_thread_map_. Otherwise we might race
     // with them in Schedule or CurrentThreadId.
     init_barrier_->Wait();
+    //如果未定义EIGEN_THREAD_LOCAL，则等待所有线程都完成初始化之后再执行下一步。这一步是为了确保线程池中的所有线程都已经完成初始化，以免在调度或获取当前线程ID时发生竞争。
 #endif
   }
 
   ~ThreadPoolTempl() {
+    //一个线程池的析构函数。它会在线程池对象被销毁时自动调用。
     done_ = true;
+    //设置一个线程池对象的状态，表示线程池不再接受新的任务，即任务队列已经关闭。
 
     // Now if all threads block without work, they will start exiting.
     // But note that threads can continue to work arbitrary long,
     // block, submit new work, unblock and otherwise live full life.
+    //尽管线程池已经关闭，线程仍然可以继续工作，直到它们完成了它们的任务，或者等待新任务的到来。
     if (!cancelled_) {
+      //检查线程池是否被取消，如果没有被取消，它会通过 ec_.Notify(true) 来通知所有等待中的线程继续执行。
       ec_.Notify(true);
     } else {
       // Since we were cancelled, there might be entries in the queues.
       // Empty them to prevent their destructor from asserting.
+      //如果线程池被取消，那么任务队列中可能还有一些任务，这些任务不应该继续执行，因为它们可能依赖于线程池的状态。
       for (size_t i = 0; i < thread_data_.size(); i++) {
         thread_data_[i].queue.Flush();
+        //遍历所有线程数据结构，并调用 Flush() 方法来清空它们的任务队列。
       }
     }
     // Join threads explicitly (by destroying) to avoid destruction order within
     // this class.
     for (size_t i = 0; i < thread_data_.size(); ++i)
       thread_data_[i].thread.reset();
+    //使用 reset() 方法将线程数据结构中的线程对象设置为 nullptr，以便它们可以被销毁。
   }
 
   void SetStealPartitions(const std::vector<std::pair<unsigned, unsigned>>& partitions) {
