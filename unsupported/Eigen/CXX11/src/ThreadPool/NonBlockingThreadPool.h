@@ -107,16 +107,23 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
   }
 
   void SetStealPartitions(const std::vector<std::pair<unsigned, unsigned>>& partitions) {
+    //函数定义，函数名为 SetStealPartitions，参数为std::vector 类型的 std::pair<unsigned, unsigned> 对象，表示一组无序的起始和结束位置。
     eigen_plain_assert(partitions.size() == static_cast<std::size_t>(num_threads_));
-
+    //断言宏，用于确保传递给函数的 partitions 参数的大小等于 num_threads_
     // Pass this information to each thread queue.
     for (int i = 0; i < num_threads_; i++) {
       const auto& pair = partitions[i];
+      //定义了一个常量引用 pair，绑定了 partitions 中第 i 个元素。该元素是一个 std::pair<unsigned, unsigned> 对象，表示一个任务子集的起始和结束位置。
       unsigned start = pair.first, end = pair.second;
+      //接下来，将 pair 中的起始和结束位置分别存储到变量 start 和 end 中。
       AssertBounds(start, end);
+      //该函数用于确保任务子集的起始和结束位置是有效的。
       unsigned val = EncodePartition(start, end);
+      //将起始和结束位置编码为一个无符号整数 val，这个值将用于在线程之间传递任务信息。
       SetStealPartition(i, val);
+      //将 val 值传递给当前正在处理的线程。
     }
+    //该循环的目的是遍历 partitions 容器中的每一个元素，并为每个线程分配一个任务的子集。
   }
 
   void Schedule(std::function<void()> fn) EIGEN_OVERRIDE {
@@ -126,14 +133,18 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
   void ScheduleWithHint(std::function<void()> fn, int start,
                         int limit) override {
     Task t = env_.CreateTask(std::move(fn));
+    //使用env_.CreateTask创建一个新的任务t，并且将其绑定到要执行的函数 fn 上
     PerThread* pt = GetPerThread();
+    //获取当前线程的特定数据，检查线程是否属于当前线程池。
     if (pt->pool == this) {
       // Worker thread of this pool, push onto the thread's queue.
       Queue& q = thread_data_[pt->thread_id].queue;
       t = q.PushFront(std::move(t));
+      //将任务添加到该线程的任务队列的前端，以实现优先级调度（q.PushFront(std::move(t))）
     } else {
       // A free-standing thread (or worker of another pool), push onto a random
       // queue.
+      //将任务添加到随机选择的线程队列的末尾，以实现负载均衡（q.PushBack(std::move(t))）
       eigen_plain_assert(start < limit);
       eigen_plain_assert(limit <= num_threads_);
       int num_queues = limit - start;
@@ -155,6 +166,7 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
       env_.ExecuteTask(t);  // Push failed, execute directly.
     }
   }
+//该方法接受一个类型为std::function的参数fn，表示需要在线程池中执行的函数，以及两个整数参数，用于指定将任务添加到的线程队列的子集。
 
   void Cancel() EIGEN_OVERRIDE {
     cancelled_ = true;
