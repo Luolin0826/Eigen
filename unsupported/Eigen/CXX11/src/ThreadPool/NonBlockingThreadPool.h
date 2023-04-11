@@ -128,6 +128,7 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
 
   void Schedule(std::function<void()> fn) EIGEN_OVERRIDE {
     ScheduleWithHint(std::move(fn), 0, num_threads_);
+    //调用下面的函数
   }
 
   void ScheduleWithHint(std::function<void()> fn, int start,
@@ -147,11 +148,16 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
       //将任务添加到随机选择的线程队列的末尾，以实现负载均衡（q.PushBack(std::move(t))）
       eigen_plain_assert(start < limit);
       eigen_plain_assert(limit <= num_threads_);
+      //数据检验 确保处于有效范围
       int num_queues = limit - start;
+      //计算从线程池的第start个线程到第limit-1个线程之家你可以选择的队列数
       int rnd = Rand(&pt->rand) % num_queues;
+      //生成一个随机数Rand 用于确定哪个线程队列接受该任务。
       eigen_plain_assert(start + rnd < limit);
+      //检查选定的队列索引是否处于有效范围内
       Queue& q = thread_data_[start + rnd].queue;
       t = q.PushBack(std::move(t));
+      //将任务添加到该队列的末尾
     }
     // Note: below we touch this after making w available to worker threads.
     // Strictly speaking, this can lead to a racy-use-after-free. Consider that
@@ -161,38 +167,47 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
     // this. We expect that such scenario is prevented by program, that is,
     // this is kept alive while any threads can potentially be in Schedule.
     if (!t.f) {
+      //检查任务是否成功添加到队列中
       ec_.Notify(false);
+      //没成功，停止等待该任务的线程条件变量，以便它们继续执行其他任务
     } else {
       env_.ExecuteTask(t);  // Push failed, execute directly.
+      //继续执行该任务
     }
   }
 //该方法接受一个类型为std::function的参数fn，表示需要在线程池中执行的函数，以及两个整数参数，用于指定将任务添加到的线程队列的子集。
 
   void Cancel() EIGEN_OVERRIDE {
-    cancelled_ = true;
-    done_ = true;
+    cancelled_ = true;//通知所有线程任务已经被取消
+    done_ = true;//通知其他线程不再继续等待任务
 
     // Let each thread know it's been cancelled.
 #ifdef EIGEN_THREAD_ENV_SUPPORTS_CANCELLATION
     for (size_t i = 0; i < thread_data_.size(); i++) {
       thread_data_[i].thread->OnCancel();
+      //遍历所有的线程，调用thread->OnCancel方法，通知线程任务已经被取消
     }
 #endif
+//实现了线程池的取消功能 
 
     // Wake up the threads without work to let them exit on their own.
-    ec_.Notify(true);
+    ec_.Notify(true);//唤醒所有没有任务的线程，使它们可以退出线程池。
   }
 
   int NumThreads() const EIGEN_FINAL { return num_threads_; }
+  //成员函数,用于获取线程池中的线程数量
 
   int CurrentThreadId() const EIGEN_FINAL {
     const PerThread* pt = const_cast<ThreadPoolTempl*>(this)->GetPerThread();
+    //调用GetPerThread()方法获取当前线程的PerThread对象
     if (pt->pool == this) {
+      //如果当前线程的pool指针指向这个ThreadPoolTempl对象
       return pt->thread_id;
     } else {
       return -1;
     }
   }
+  //成员函数,用于获取线程池中的线程ID
 
  private:
   // Create a single atomic<int> that encodes start and limit information for
@@ -202,32 +217,44 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
   // Exposed publicly as static functions so that external callers can reuse
   // this encode/decode logic for maintaining their own thread-safe copies of
   // scheduling and steal domain(s).
+  //创建一个包含起始和结束信息的std::atomic<int>,可以同时存储每个线程的起始和结束信息。
+  //公开为静态函数，以便外部调用者可以重用这些编码/解码逻辑来维护自己的线程安全的调度和抢占域。
   static const int kMaxPartitionBits = 16;
   static const int kMaxThreads = 1 << kMaxPartitionBits;
+  //表示最大分区位数和最大线程数的常量。其中，kMaxPartitionBits为16，表示线程池支持的最大线程数为2^16，即65536；
+  //kMaxThreads则根据kMaxPartitionBits计算而来，即1左移kMaxPartitionBits
 
   inline unsigned EncodePartition(unsigned start, unsigned limit) {
     return (start << kMaxPartitionBits) | limit;
+    //将一个任务分区的起始位置start和终止位置limit编码成一个无符号整数，以便存储在std::atomic<unsigned>中。
+    //具体来说，该函数将start左移kMaxPartitionBits位，然后与limit进行按位或运算，返回结果。
   }
 
   inline void DecodePartition(unsigned val, unsigned* start, unsigned* limit) {
     *limit = val & (kMaxThreads - 1);
+    //将val与kMaxThreads-1进行按位与运算，得到limit
     val >>= kMaxPartitionBits;
     *start = val;
+    //将val右移kMaxPartitionBits位，得到start
   }
+   //将一个无符号整数val解码成一个任务分区的起始位置start和终止位置limit。
 
   void AssertBounds(int start, int end) {
     eigen_plain_assert(start >= 0);
     eigen_plain_assert(start < end);  // non-zero sized partition
     eigen_plain_assert(end <= num_threads_);
   }
+  // 检查起始和结束位置是否合法
 
   inline void SetStealPartition(size_t i, unsigned val) {
     thread_data_[i].steal_partition.store(val, std::memory_order_relaxed);
   }
+  // 设置线程 i 的偷取分区
 
   inline unsigned GetStealPartition(int i) {
     return thread_data_[i].steal_partition.load(std::memory_order_relaxed);
   }
+  // 获取线程 i 的偷取分区
 
   void ComputeCoprimes(int N, MaxSizeVector<unsigned>* coprimes) {
     for (int i = 1; i <= N; i++) {
@@ -244,25 +271,30 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
       }
     }
   }
+  // 计算 N 的所有互质数
 
-  typedef typename Environment::EnvThread Thread;
+  typedef typename Environment::EnvThread Thread;//Thread类型是Environment::EnvThread的别名，它定义了一个平台特定的线程类型。
 
   struct PerThread {
     constexpr PerThread() : pool(NULL), rand(0), thread_id(-1) {}
     ThreadPoolTempl* pool;  // Parent pool, or null for normal threads.
     uint64_t rand;          // Random generator state.
-    int thread_id;          // Worker thread index in pool.
+    int thread_id;          // Worker thread index in pool. 该线程在池中的索引号。
 #ifndef EIGEN_THREAD_LOCAL
     // Prevent false sharing.
     char pad_[128];
+    //防止 false sharing，这是一种多线程编程时的优化技术。
+    //False sharing 指的是多个线程同时访问同一缓存行，由于缓存一致性协议的限制，每个线程在修改缓存行时需要将其它线程的缓存行都失效，导致性能下降。
+    //为了避免 false sharing，可以在结构体的末尾添加一些填充字段，使得每个结构体占用的空间大小是缓存行的整数倍。
+    //在这里，作者添加了 128 字节的填充字段 pad_，使得 PerThread 结构体占用的空间大小为 128 字节的整数倍。
 #endif
   };
 
   struct ThreadData {
     constexpr ThreadData() : thread(), steal_partition(0), queue() {}
-    std::unique_ptr<Thread> thread;
-    std::atomic<unsigned> steal_partition;
-    Queue queue;
+    std::unique_ptr<Thread> thread;//Thread对象的unique_ptr
+    std::atomic<unsigned> steal_partition;//unsigned类型的原子变量steal_partition
+    Queue queue;//Queue是一个模板类型，是一个线程安全的队列，用于在工作线程之间传递任务。
   };
 
   Environment env_;
@@ -278,14 +310,17 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
   std::atomic<bool> cancelled_;
   EventCount ec_;
 #ifndef EIGEN_THREAD_LOCAL
+//在不支持线程本地存储的情况下使用。
   std::unique_ptr<Barrier> init_barrier_;
   std::mutex per_thread_map_mutex_;  // Protects per_thread_map_.
   std::unordered_map<uint64_t, std::unique_ptr<PerThread>> per_thread_map_;
-#endif
+#endif0
+//并行线程池的类定义
 
   // Main worker thread loop.
   void WorkerLoop(int thread_id) {
 #ifndef EIGEN_THREAD_LOCAL
+// 创建新的PerThread实例，并插入到per_thread_map_中
     std::unique_ptr<PerThread> new_pt(new PerThread());
     per_thread_map_mutex_.lock();
     bool insertOK = per_thread_map_.emplace(GlobalThreadIdHash(), std::move(new_pt)).second;
@@ -295,16 +330,23 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
     init_barrier_->Notify();
     init_barrier_->Wait();
 #endif
+// 获取当前线程的 PerThread 结构体指针
     PerThread* pt = GetPerThread();
     pt->pool = this;
     pt->rand = GlobalThreadIdHash();
     pt->thread_id = thread_id;
+    // 获取当前线程对应的 Queue
     Queue& q = thread_data_[thread_id].queue;
+    // 获取当前线程对应的 Waiter
     EventCount::Waiter* waiter = &waiters_[thread_id];
     // TODO(dvyukov,rmlarsen): The time spent in NonEmptyQueueIndex() is
     // proportional to num_threads_ and we assume that new work is scheduled at
     // a constant rate, so we set spin_count to 5000 / num_threads_. The
     // constant was picked based on a fair dice roll, tune it.
+    /*
+    这段代码是一个待办事项，意思是：由于 NonEmptyQueueIndex() 函数的运行时间与线程数成正比，我们假设新的任务以一个恒定的速率被调度，
+    因此我们将 spin_count 设置为 5000 / num_threads_。这个常数是根据一个公正的骰子掷骰子得出的，需要进行调整。
+    */
     const int spin_count =
         allow_spinning_ && num_threads_ > 0 ? 5000 / num_threads_ : 0;
     if (num_threads_ == 1) {
@@ -314,31 +356,43 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
       // compared to the order in which they are scheduled, which tends to be
       // counter-productive for the types of I/O workloads the single thread
       // pools tend to be used for.
+      /*
+      当num_threads_ == 1时，经过昂贵的偷窃循环是没有意义的。此外，由于NonEmptyQueueIndex()在受害者队列上调用PopBack()，
+      可能会反转操作执行的顺序，与安排操作的顺序相比，这往往是有害的，因为单线程池通常用于I/O工作负载的类型。
+      */
+      // 如果 num_threads_ 等于 1，就不需要偷取其他线程的任务了，直接从自己的队列中取任务
       while (!cancelled_) {
         Task t = q.PopFront();
         for (int i = 0; i < spin_count && !t.f; i++) {
+          // 如果当前队列中没有任务，就自旋等待 spin_count 次，直到队列非空或者 cancelled_ 标志被设置
           if (!cancelled_.load(std::memory_order_relaxed)) {
             t = q.PopFront();
           }
         }
         if (!t.f) {
+          // 如果队列中还是没有任务，则阻塞等待，直到有任务到来或者 cancelled_ 标志被设置
           if (!WaitForWork(waiter, &t)) {
             return;
           }
         }
         if (t.f) {
+        // 如果有任务，就执行任务
           env_.ExecuteTask(t);
         }
       }
     } else {
+      // 如果 num_threads_ 大于 1，就需要偷取其他线程的任务了
       while (!cancelled_) {
+        // 先从自己的队列中取任务
         Task t = q.PopFront();
         if (!t.f) {
+          // 如果自己的队列中没有任务，就从其他线程的队列中偷取任务
           t = LocalSteal();
           if (!t.f) {
             t = GlobalSteal();
             if (!t.f) {
               // Leave one thread spinning. This reduces latency.
+              // 如果所有线程的队列中都没有任务，则有一个线程自旋等待
               if (allow_spinning_ && !spinning_ && !spinning_.exchange(true)) {
                 for (int i = 0; i < spin_count && !t.f; i++) {
                   if (!cancelled_.load(std::memory_order_relaxed)) {
@@ -350,6 +404,7 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
                 spinning_ = false;
               }
               if (!t.f) {
+                 // 如果仍然没有任务，就阻塞等待，直到有任务到来或者 cancelled_ 标志
                 if (!WaitForWork(waiter, &t)) {
                   return;
                 }
@@ -358,6 +413,7 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
           }
         }
         if (t.f) {
+          //执行任务
           env_.ExecuteTask(t);
         }
       }
@@ -366,39 +422,57 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
 
   // Steal tries to steal work from other worker threads in the range [start,
   // limit) in best-effort manner.
+  // Steal函数尝试从范围[start, limit)内的其他工作线程中窃取工作。
   Task Steal(unsigned start, unsigned limit) {
     PerThread* pt = GetPerThread();
     const size_t size = limit - start;
+    // 生成一个随机数r，用于选择被窃取的队列
     unsigned r = Rand(&pt->rand);
     // Reduce r into [0, size) range, this utilizes trick from
     // https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction/
+    //判断 all_coprimes_[size - 1] 的大小是否小于 2^30，如果超过了这个值就会导致 unsigned 类型溢出
+    //all_coprimes_ 是一个保存着 size - 1 的所有互质数的数组，它用于将随机数 r 转换成一个在 [0, size) 范围内的值。
+    //这个数组中的元素个数是固定的，因此可以预先计算并保存在数组中，而不需要每次都重新计算。
     eigen_plain_assert(all_coprimes_[size - 1].size() < (1<<30));
+    //随后，将随机数 r 乘以 size 后再右移 32 位，得到在 [0, size) 范围内的一个窃取目标。这里使用了一个技巧，将乘法运算转换成位运算，这样可以减少计算开销。
     unsigned victim = ((uint64_t)r * (uint64_t)size) >> 32;
+    //接着，将随机数 r 乘以 all_coprimes_[size - 1].size() 后再右移 32 位，得到一个索引值 index。
     unsigned index = ((uint64_t) all_coprimes_[size - 1].size() * (uint64_t)r) >> 32;
+    //从 all_coprimes_[size - 1] 数组中取出 index 对应的互质数作为步长 inc。这个步长用于在窃取时依次访问其他线程的工作队列，以提高窃取的效率。
     unsigned inc = all_coprimes_[size - 1][index];
-
+    // 在[0, size)范围内尝试窃取工作，直到所有队列都尝试过一遍
     for (unsigned i = 0; i < size; i++) {
+      // 确定窃取哪个队列
       eigen_plain_assert(start + victim < limit);
+      // 从队列中取出任务
       Task t = thread_data_[start + victim].queue.PopBack();
       if (t.f) {
+        // 如果窃取成功，返回任务
         return t;
       }
+      // 尝试窃取下一个队列
       victim += inc;
       if (victim >= size) {
         victim -= size;
       }
     }
+    // 如果没有窃取到任何任务，则返回一个空任务
     return Task();
   }
 
   // Steals work within threads belonging to the partition.
+  //从所属分区的线程中窃取任务。
   Task LocalSteal() {
+    //获取当前线程的 ID
     PerThread* pt = GetPerThread();
+    //通过 GetStealPartition 函数获取线程所属的分区号。
     unsigned partition = GetStealPartition(pt->thread_id);
     // If thread steal partition is the same as global partition, there is no
     // need to go through the steal loop twice.
+    //如果全局窃取分区与该线程所属的分区相同，就直接返回一个空的 Task，因为不需要做窃取操作。
     if (global_steal_partition_ == partition) return Task();
     unsigned start, limit;
+    //通过 DecodePartition 函数解码该分区的起始和结束下标，并调用 Steal 函数进行窃取操作。
     DecodePartition(partition, &start, &limit);
     AssertBounds(start, limit);
 
@@ -414,81 +488,98 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
   // WaitForWork blocks until new work is available (returns true), or if it is
   // time to exit (returns false). Can optionally return a task to execute in t
   // (in such case t.f != nullptr on return).
+  /*WaitForWork()方法会阻塞线程直到有新的任务可用。如果线程池已经关闭或者超时（需要执行参数timeout）则返回false。
+  如果等待到新任务可用，则返回true，并且可以在参数t中返回一个任务。*/
   bool WaitForWork(EventCount::Waiter* waiter, Task* t) {
-    eigen_plain_assert(!t->f);
+    eigen_plain_assert(!t->f);// t.f 应该为 nullpt
     // We already did best-effort emptiness check in Steal, so prepare for
     // blocking.
     ec_.Prewait();
     // Now do a reliable emptiness check.
     int victim = NonEmptyQueueIndex();
-    if (victim != -1) {
-      ec_.CancelWait();
-      if (cancelled_) {
-        return false;
+    if (victim != -1) {// 如果存在非空队列
+      ec_.CancelWait();// 取消等待
+      if (cancelled_) {// 如果取消标志为 true
+        return false;// 返回 false，表示需要退出
       } else {
-        *t = thread_data_[victim].queue.PopBack();
-        return true;
+        *t = thread_data_[victim].queue.PopBack();// 取出最后一个任务
+        return true;// 返回 true，表示存在新的任务
       }
     }
     // Number of blocked threads is used as termination condition.
     // If we are shutting down and all worker threads blocked without work,
     // that's we are done.
-    blocked_++;
+    /*blocked_ 记录了当前阻塞的线程数，用于判断当前是否需要终止线程池。
+    如果当前正在关闭线程池，并且所有线程都被阻塞而没有任务可执行，那么我们就可以认为线程池已经完成了所有任务的执行，可以进行终止操作。*/
+    blocked_++;// 当前线程阻塞，增加阻塞线程数
     // TODO is blocked_ required to be unsigned?
-    if (done_ && blocked_ == static_cast<unsigned>(num_threads_)) {
-      ec_.CancelWait();
+    if (done_ && blocked_ == static_cast<unsigned>(num_threads_)) { // 如果已经完成，且所有线程都已阻塞
+      ec_.CancelWait();// 取消等待
       // Almost done, but need to re-check queues.
       // Consider that all queues are empty and all worker threads are preempted
       // right after incrementing blocked_ above. Now a free-standing thread
       // submits work and calls destructor (which sets done_). If we don't
       // re-check queues, we will exit leaving the work unexecuted.
-      if (NonEmptyQueueIndex() != -1) {
+      if (NonEmptyQueueIndex() != -1) { // 如果存在非空队列
         // Note: we must not pop from queues before we decrement blocked_,
         // otherwise the following scenario is possible. Consider that instead
         // of checking for emptiness we popped the only element from queues.
         // Now other worker threads can start exiting, which is bad if the
         // work item submits other work. So we just check emptiness here,
         // which ensures that all worker threads exit at the same time.
-        blocked_--;
-        return true;
+        /*解释为什么在重新检查队列之前不能从队列中弹出元素。
+        假设在当前线程检查队列之前，队列中只有一个元素，如果当前线程首先从队列中弹出了这个元素，那么其他线程可能会退出，这可能会导致未执行的工作项。
+        为了避免这种情况，我们必须首先检查队列是否为空，只有在确定队列为空之后才能弹出元素。这样可以确保所有工作线程在同一时间退出。
+        */
+        blocked_--;// 减少阻塞线程数
+        return true;// 返回 true，表示存在新的任务
       }
       // Reached stable termination state.
-      ec_.Notify(true);
-      return false;
+      ec_.Notify(true);// 唤醒等待中的线程
+      return false;// 返回 false，表示需要退出
     }
-    ec_.CommitWait(waiter);
-    blocked_--;
-    return true;
+    ec_.CommitWait(waiter);/ 等待
+    blocked_--;// 当前线程解除阻塞
+    return true;// 返回 true，表示存在新的任务
   }
 
+  /*函数 NonEmptyQueueIndex() 会尝试从所有线程的队列中随机选取一个非空队列，并返回其对应的线程编号，
+  如果没有找到任何非空队列，则返回 -1。该函数的设计目的是避免线程在等待队列中的任务时陷入死循环。*/
   int NonEmptyQueueIndex() {
-    PerThread* pt = GetPerThread();
+    PerThread* pt = GetPerThread();//获得当前线程的数据结构指针pt
     // We intentionally design NonEmptyQueueIndex to steal work from
     // anywhere in the queue so threads don't block in WaitForWork() forever
     // when all threads in their partition go to sleep. Steal is still local.
-    const size_t size = thread_data_.size();
-    unsigned r = Rand(&pt->rand);
-    unsigned inc = all_coprimes_[size - 1][r % all_coprimes_[size - 1].size()];
+    /*我们有意地设计了 NonEmptyQueueIndex 函数从队列中的任何位置窃取工作项，
+    这样线程在其分区中的所有线程都进入睡眠状态时不会永远阻塞在 WaitForWork() 函数中。这个窃取操作仍然是本地的。*/
+    const size_t size = thread_data_.size();//获取线程数量size
+    unsigned r = Rand(&pt->rand);//随机生成一个种子数r
+    unsigned inc = all_coprimes_[size - 1][r % all_coprimes_[size - 1].size()];//从all_coprimes_中选取与线程数量相关的质数inc
     unsigned victim = r % size;
+    // 遍历所有队列，从随机的 victim 开始，每次增加一个步长 inc
+    // 直到遍历完所有队列或者找到非空的队列为止
     for (unsigned i = 0; i < size; i++) {
       if (!thread_data_[victim].queue.Empty()) {
-        return victim;
+        //如果该线程的队列不为空
+        return victim;//返回该线程的索引
       }
       victim += inc;
       if (victim >= size) {
         victim -= size;
       }
     }
-    return -1;
+    return -1;//最终没有找到非空队列，则返回-1，表示当前没有可用的工作项。
   }
 
+/* GlobalThreadIdHash() 返回当前线程的 ID 的哈希值。该函数可能在选择要从哪个线程的队列中偷取任务时使用到。*/
   static EIGEN_STRONG_INLINE uint64_t GlobalThreadIdHash() {
     return std::hash<std::thread::id>()(std::this_thread::get_id());
   }
 
   EIGEN_STRONG_INLINE PerThread* GetPerThread() {
 #ifndef EIGEN_THREAD_LOCAL
-    static PerThread dummy;
+   // 没有定义EIGEN_THREAD_LOCAL时，使用全局映射per_thread_map_查找当前线程的PerThread指针
+    static PerThread dummy;// dummy变量用于返回默认PerThread指针
     auto it = per_thread_map_.find(GlobalThreadIdHash());
     if (it == per_thread_map_.end()) {
       return &dummy;
@@ -496,12 +587,18 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
       return it->second.get();
     }
 #else
+    // 定义了EIGEN_THREAD_LOCAL时，返回当前线程的局部变量指针
     EIGEN_THREAD_LOCAL PerThread per_thread_;
     PerThread* pt = &per_thread_;
     return pt;
 #endif
   }
 
+  // 使用 PCG 生成伪随机数
+  // 该函数使用了 PCG-XSH-RS 方案生成随机数
+  // 生成的随机数是 unsigned 类型
+  // 输入参数 state 是一个指向 uint64_t 的指针，用于存储和更新内部状态
+  // 函数返回生成的随机数
   static EIGEN_STRONG_INLINE unsigned Rand(uint64_t* state) {
     uint64_t current = *state;
     // Update the internal state
@@ -512,6 +609,7 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
   }
 };
 
+//定义了一个ThreadPool类型，其模板参数为StlThreadEnvironment，即使用STL库实现的线程环境。使用typedef将其定义为ThreadPool。
 typedef ThreadPoolTempl<StlThreadEnvironment> ThreadPool;
 
 }  // namespace Eigen
