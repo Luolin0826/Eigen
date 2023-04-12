@@ -1645,6 +1645,7 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
       }
     }
 
+    // 将三个源缓冲区中的值加到目标缓冲区中，其中每个缓冲区都是按对齐边界对齐的。
     template <int Alignment>
     EIGEN_STRONG_INLINE static void addAllToBuffer(size_t n,
                                                    const Scalar* src_buf0,
@@ -1661,17 +1662,22 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
 
       size_t i = 0;
       const size_t num_packets = n / output_packet_size;
+      // 循环，每次处理一个数据包大小的数据
       for (; i < output_packet_size * num_packets; i += output_packet_size) {
+        // 加载数据包
         const auto src_val0 = pload<PacketReturnType>(src_buf0 + i);
         const auto src_val1 = pload<PacketReturnType>(src_buf1 + i);
         const auto src_val2 = pload<PacketReturnType>(src_buf2 + i);
 
+        // 从目标缓冲区中加载数据包
         const auto dst_val = ploadt<PacketReturnType, Alignment>(dst_buf + i);
+        // 计算三个数据包的和
         const auto sum =
             padd(padd(dst_val, src_val0), padd(src_val1, src_val2));
-
+        // 将计算结果存储回目标缓冲区
         pstoret<Scalar, PacketReturnType, Alignment>(dst_buf + i, sum);
       }
+      // 处理剩余不足一个数据包大小的数据
       for (; i < n; ++i) {
         dst_buf[i] += src_buf0[i] + src_buf1[i] + src_buf2[i];
       }
