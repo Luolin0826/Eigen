@@ -1683,10 +1683,12 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
       }
     }
 
+//使用二分法递归计算矩阵块，知道矩阵块数量为1
     template <int Alignment>
     void eval(Barrier& barrier, Index start_block_idx, Index end_block_idx) {
       while (end_block_idx - start_block_idx > 1) {
         Index mid_block_idx = (start_block_idx + end_block_idx) / 2;
+        //将计算设备压入设备队列，等待异步执行
         evaluator->m_device.enqueueNoNotification(
             [this, &barrier, mid_block_idx, end_block_idx]() {
               eval<Alignment>(barrier, mid_block_idx, end_block_idx);
@@ -1694,17 +1696,20 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
         end_block_idx = mid_block_idx;
       }
 
+      //更新矩阵块数量范围，缩小计算范围
       Index block_idx = start_block_idx;
       Index block_start = block_idx * block_size;
       Index block_end = block_start + actualBlockSize(block_idx);
-
+      // 对当前矩阵块进行计算
       processBlock<Alignment>(block_idx, block_start, block_end);
+      //发送计算完成信号
       barrier.Notify();
     }
 
     template <int Alignment>
     void evalAsync(Index start_block_idx, Index end_block_idx) {
       while (end_block_idx - start_block_idx > 1) {
+        //二分法拆分成多个小任务，提交给线程池异步进行
         Index mid_block_idx = (start_block_idx + end_block_idx) / 2;
         evaluator->m_device.enqueueNoNotification(
             [this, mid_block_idx, end_block_idx]() {
@@ -1714,10 +1719,10 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
       }
 
       Index block_idx = start_block_idx;
-
+      //计算当前块的起始位置和终止位置
       Index block_start = block_idx * block_size;
       Index block_end = block_start + actualBlockSize(block_idx);
-
+      //处理当前块
       processBlock<Alignment>(block_idx, block_start, block_end);
 
       int v = num_pending_blocks.fetch_sub(1);
@@ -1725,9 +1730,11 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
 
       if (v == 1) {
         // Aggregate partial sums from l0 ranges.
+        //所有块都处理完成，进行结果聚合
         aggregateL0Blocks<Alignment>();
 
         // Apply output kernel.
+        //应用输出内核
         applyOutputKernel();
 
         // NOTE: If we call `done` callback before deleting this (context),
@@ -1735,12 +1742,16 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
         // fail in destructor trying to deallocate temporary buffers.
 
         // Move done call back from context before it will be destructed.
+        // 注意：如果在删除当前上下文之前调用 `done` 回调，会尝试释放上下文中捕获的 Self* 指针，导致在析构函数中失败尝试释放临时缓冲区
+        // 将 `done` 回调从上下文中移动出来，以避免在删除上下文之前调用它 
         DoneCallback done_copy = std::move(done);
 
         // We are confident that we are the last one who touches context.
+        // 删除当前上下文，释放临时缓冲区
         delete this;
 
         // Now safely call the done callback.
+        // 安全地调用 `done` 回调
         done_copy();
       }
     }
