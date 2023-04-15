@@ -1759,19 +1759,26 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
     // Cost model doesn't capture well the cost associated with constructing
     // tensor contraction mappers and computing loop bounds in gemm_pack_lhs
     // and gemm_pack_rhs, so we specify minimum desired block size.
+    /*成本模型不能很好地捕捉张量收缩映射器构造以及在 gemm_pack_lhs 和 
+    gemm_pack_rhs 中计算循环边界所涉及的成本，因此我们指定最小期望块大小。*/
+    // 计算分块大小的函数，考虑了硬件的向量化特性和线程数量等因素
+    // 参数 k：要进行分块的维度大小
+    // 参数 num_threads：线程数量
     static Index blockSize(Index k, int num_threads) {
       const auto round_up = [=](Index index) -> Index {
-        const Index kmultiple = packet_size <= 8 ? 8 : packet_size;
-        return divup<Index>(index, kmultiple) * kmultiple;
+        const Index kmultiple = packet_size <= 8 ? 8 : packet_size;// 向量化时要用到的大小
+        return divup<Index>(index, kmultiple) * kmultiple;// 取大于等于index的最小的kmultiple的倍数
       };
 
-      const Index target_block_size = round_up(divup<Index>(k, num_threads));
-      const Index desired_min_block_size = 12 * packet_size;
+      const Index target_block_size = round_up(divup<Index>(k, num_threads)); // 目标块大小
+      const Index desired_min_block_size = 12 * packet_size;// 期望的最小块大小
 
+      // 返回目标块大小和期望最小块大小中较小的一个，并且不超过k
       return numext::mini<Index>(
           k, numext::maxi<Index>(desired_min_block_size, target_block_size));
     }
 
+    // 禁用拷贝构造函数和赋值函数
     EvalShardedByInnerDimContext(const EvalShardedByInnerDimContext&) = delete;
     void operator=(const EvalShardedByInnerDimContext&) = delete;
   };
@@ -1780,59 +1787,77 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
 
   // Below are the function used by evalProductImpl heuristics, trying to select
   // optimcal parameters for parallelization algorithm.
+  // 以下是 evalProductImpl 启发式算法中使用的函数，旨在选择并行化算法的最佳参数。
 
   // Decide whether we want to shard m x n contraction by columns or by rows.
+  // 决定我们是要按列还是按行来进行分片m x n的收缩运算。
   static bool shardByCol(Index m, Index n, Index num_threads) {
     // Note: we are comparing both n and m against Traits::nr, it is not
     // a mistake. We are trying to figure out how both n and m will fit into
     // the main sharding dimension.
+    /*注意：我们正在将n和m与Traits::nr进行比较，这不是一个错误。我们试图弄清楚n和m将如何适合主分片维度。*/
 
     // Sharding by column is the default
     // ... unless there is enough data for vectorization over rows
+    // 按列进行分片是默认的选择
+    // ... 除非有足够的数据可以沿着行进行向量化 
     if (m / num_threads >= Traits::nr &&
         // and not enough data for vectorization over columns
+        // 并且数据不足以沿列进行向量化
         (n / num_threads < Traits::nr ||
          // ... or barely enough data for vectorization over columns,
          // but it is not evenly dividable across threads
+         // ... 或者数据仅足够沿着列进行向量化，
+         // 但无法在线程之间均匀分配
          (n / num_threads < 4 * Traits::nr &&
           (n % (num_threads * Traits::nr)) != 0 &&
           // ... and it is evenly dividable across threads for rows
+          // ... 并且它在行上可以被均匀地分配
           ((m % (num_threads * Traits::nr)) == 0 ||
            // .. or it is not evenly dividable for both dimensions but
            // there is much more data over rows so that corner effects are
            // mitigated.
+           // .. 或者它在两个维度上都不能被均匀地分配，但是
+           // 行上有更多的数据，以便缓解边缘效应。
            (m / n >= 6)))))
       return false;
     // Wait, or if matrices are just substantially prolonged over the other
     // dimension.
+    // 或者，如果矩阵在另一个维度上仅长得多。
     if (n / num_threads < 16 * Traits::nr && m > n * 32) return false;
     return true;
   }
 
+  // 确定M方向的粗粒度块大小，以便用于多线程并行
   Index coarsenM(Index m, Index n, Index bm, Index bn, Index bk, Index gn,
                  int num_threads, bool shard_by_col) const {
-    Index gm = 1;
-    Index gm1 = 1;
-    Index nm0 = divup(m, bm);
+    Index gm = 1;// 粗粒度块大小的初始值为1
+    Index gm1 = 1; // 下一个候选的粗粒度块大小的初始值也为1
+    Index nm0 = divup(m, bm);// 沿M方向分成的块的数量，使用输入的M方向块大小bm
     Index nm1 = nm0;
     for (;;) {
       // Find the next candidate for m grain size. It needs to result in
       // different number of blocks. E.g. if we have 10 kernels, we want to try
       // 5 and 10, but not 6, 7, 8 and 9.
+      // 找到下一个候选的粗粒度块大小。需要结果产生不同数量的块。
+      // 例如，如果有10个内核，则要尝试5和10，但不要尝试6、7、8和9。
       while (gm1 <= nm0 && nm1 == divup(nm0, gm1)) gm1++;
+      // 候选的粗粒度块大小已超过M方向块数，退出循环
       if (gm1 > nm0) break;
       // Check the candidate.
+      // 检查候选粗粒度块大小，返回-1表示候选无效，返回0表示继续尝试其他候选，返回1表示候选有效
       int res = checkGrain(m, n, bm, bn, bk, gm1, gn, gm, gn, num_threads,
                            shard_by_col);
-      if (res < 0) break;
-      nm1 = divup(nm0, gm1);
-      if (res == 0) continue;
+      if (res < 0) break;// 候选无效，退出循环
+      nm1 = divup(nm0, gm1); // 沿N方向的块数更新
+      if (res == 0) continue;// 继续尝试其他候选
       // Commit new grain size.
-      gm = gm1;
+      gm = gm1;// 候选有效，更新粗粒度块大小
     }
-    return gm;
+    return gm;// 返回确定的M方向粗粒度块大小
   }
 
+  //和上一个对应
   Index coarsenN(Index m, Index n, Index bm, Index bn, Index bk, Index gm,
                  int num_threads, bool shard_by_col) const {
     Index gn = 1;
@@ -1854,24 +1879,31 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
 
   // checkGrain checks whether grain (gm, gn) is suitable and is better than
   // (oldgm, oldgn).
+  // checkGrain检查(grm, gn)是否合适，以及是否优于(oldgm, oldgn)
   int checkGrain(Index m, Index n, Index bm, Index bn, Index bk, Index gm,
                  Index gn, Index oldgm, Index oldgn, int num_threads,
                  bool shard_by_col) const {
+    //计算张量操作成本
     const TensorOpCost cost =
         contractionCost(bm * gm, bn * gn, bm, bn, bk, shard_by_col, true);
+    // 计算任务大小，如果任务太小，我们将接受它，否则同步开销会占主导地位
     double taskSize = TensorCostModel<ThreadPoolDevice>::taskSize(
         static_cast<double>(bm) * gm * bn * gn, cost);
     // If the task is too small, then we agree on it regardless of anything
     // else. Otherwise synchronization overheads will dominate.
-    if (taskSize < 1) return 1;
+    if (taskSize < 1) return 1;//任务太小
     // If it is too large, then we reject it and all larger tasks.
-    if (taskSize > 2) return -1;
+    if (taskSize > 2) return -1;//任务太大
     // Now we are in presumably good task size range.
     // The main deciding factor here is parallelism. Consider that we have 12
     // kernels and 4 threads. Grains of 2, 3 and 4 all yield good task sizes.
     // But 2/4 yield 6/3 tasks, which gives us parallelism of 0.75 (at most 3/4
     // of cores will be busy). While grain size 3 gives us 4 tasks, which gives
     // us parallelism of 1 (we can load all cores).
+    /*现在我们假定我们处于良好的任务大小范围内。在这里，主要决定因素是并行性。
+    假设我们有12个内核和4个线程。2、3和4的粒度都可以产生良好的任务大小。
+    但是，2/4会产生6/3个任务，这给我们带来了0.75的并行性（最多只有3/4个核心将忙碌）。
+    而3的粒度会产生4个任务，这给我们带来了1的并行性（我们可以利用所有核心）。*/
     Index nm0 = divup(m, bm);
     Index nn0 = divup(n, bn);
     Index new_tasks = divup(nm0, gm) * divup(nn0, gn);
@@ -1881,58 +1913,72 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
     double old_parallelism = static_cast<double>(old_tasks) /
                              (divup<int>(old_tasks, num_threads) * num_threads);
     if (new_parallelism > old_parallelism || new_parallelism == 1) return 1;
+    //如果新的并行度比旧的并行度高或者新的并行度为 1，则返回 1，否则返回 0。
     return 0;
   }
 
+  // 计算矩阵乘法的成本
   TensorOpCost contractionCost(Index m, Index n, Index bm, Index bn, Index bk,
                                bool shard_by_col, bool prepacked) const {
+    // 计算矩阵中存储元素的数据类型大小，取左右矩阵数据类型的最小值
     const int packed_size = std::min<int>(PacketType<LhsScalar, Device>::size,
                                           PacketType<RhsScalar, Device>::size);
+    // 计算输出的数据类型大小
     const int output_packet_size = internal::unpacket_traits<PacketReturnType>::size;
+    // 计算矩阵计算时每个元素的操作数
     const double kd = static_cast<double>(bk);
+    // 计算计算带宽
     double compute_bandwidth = computeBandwidth(false, bm, bn, bk);
     // Computations.
+    // 计算矩阵计算成本
     TensorOpCost cost = TensorOpCost(0, 0, kd * compute_bandwidth, true, packed_size);
     // Output stores.
+    // 计算输出存储成本
     cost += TensorOpCost(0, sizeof(CoeffReturnType), 0, true, output_packet_size);
     if (prepacked) {
       // Packing and kernels are executed in different tasks. When we calculate
       // task grain size we look only at kernel cost assuming that kernel
       // is more expensive than packing.
+      // 若已预先打包，则返回仅包含计算成本的结果
       return cost;
     }
     // Lhs/rhs loads + computations.
+    // 计算左右矩阵的加载成本和计算成本
     TensorOpCost lhsCost = this->m_leftImpl.costPerCoeff(true) * (kd / n);
     TensorOpCost rhsCost = this->m_rightImpl.costPerCoeff(true) * (kd / m);
     // Lhs packing memory cost does not contribute considerably to overall
     // execution time because lhs is prefetched early and accessed sequentially.
+    // 若按列分块，则左矩阵的内存成本不占据执行时间，因为左矩阵已经被预读入内存，顺序访问
     if (shard_by_col)
       lhsCost.dropMemoryCost();
     else
       rhsCost.dropMemoryCost();
+    // 返回总成本
     return cost + lhsCost + rhsCost;
   }
 
   // Decide whether we want to shard m x k x n contraction over the inner
   // (contraction) dimension (k).
+  // 决定是否要在内部维度（k）上分片m x k x n的收缩运算。
   static bool shardByInnerDim(Index m, Index n, Index k, int num_threads,
                               int num_threads_by_k) {
     std::ptrdiff_t bufsize = m * n * sizeof(Scalar);
     bool shard_by_k = false;
-    if (n == 1 ||                // If mat*vec or...
-        num_threads_by_k < 2 ||  // running single threaded or...
+    if (n == 1 ||                // If mat*vec or...是mat*vec
+        num_threads_by_k < 2 ||  // running single threaded or...单线程运行
         num_threads_by_k <
-            num_threads ||  // sharding by k gives less parallelism or...
-        bufsize > l3CacheSize() / num_threads_by_k ||  // need more buffer space
+            num_threads ||  // sharding by k gives less parallelism or... 按k分片会导致并行度降低
+        bufsize > l3CacheSize() / num_threads_by_k ||  // need more buffer space 需要的缓冲区空间超过L3缓存
         // than L3 cache or...
-        k / num_threads_by_k < 2 * Traits::nr) {  // k per thread is tiny.
+        k / num_threads_by_k < 2 * Traits::nr) {  // k per thread is tiny.每个线程处理的k非常小
       shard_by_k = false;
     } else if (numext::maxi(m, n) / num_threads <
-                   Traits::nr ||  // both other dimensions are tiny or...
-               // k per thread is not small and...
+                   Traits::nr ||  // both other dimensions are tiny or... 两个其他维度非常小
+               // k per thread is not small and... 每个线程处理的k不小
                (k / num_threads_by_k > 8 * Traits::nr &&
                 // one of the outer dimensions is tiny or sharding by k offers
                 // more parallelism.
+                // 一个外部维度非常小或按k分片提供了更高的并行度。
                 (numext::mini(m, n) < 2 * Traits::nr ||
                  num_threads_by_k > num_threads))) {
       shard_by_k = true;
@@ -1940,33 +1986,42 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
     return shard_by_k;
   }
 
+  //给定矩阵尺寸m、n和k，计算沿内部维度（k）进行张量收缩的成本。
   TensorOpCost contractionCostPerInnerDim(Index m, Index n, Index k) const {
     // Compute cost.
     const int output_packet_size = internal::unpacket_traits<PacketReturnType>::size;
     TensorOpCost cost(0, 0, (computeBandwidth(true, m, n, k) * m) * n, true, output_packet_size);
-    // Output stores.
+    // Output stores.输出存储
     cost += TensorOpCost(0, sizeof(CoeffReturnType), 0, true, output_packet_size);
     TensorOpCost lhsCost = this->m_leftImpl.costPerCoeff(true) * m;
     TensorOpCost rhsCost = this->m_rightImpl.costPerCoeff(true) * n;
     // Since the inner gemm kernel is always sharded by column, the lhs
     // load cost is negligible.
+    // 由于内部gemm内核总是按列分片，因此lhs加载成本可以忽略不计。
     lhsCost.dropMemoryCost();
+    //返回总成本
     return cost + lhsCost + rhsCost;
   }
 
+//给定矩阵尺寸m、n和k，计算内部维度（k）上的线程数。
   int numThreadsInnerDim(Index m, Index n, Index k) const {
+    //计算输出包大小
     const int output_packet_size = internal::unpacket_traits<PacketReturnType>::size;
+    //计算收缩成本
     TensorOpCost cost = contractionCostPerInnerDim(m, n, k);
+    //计算总的并行成本
     double total_parallel_cost =
         TensorCostModel<ThreadPoolDevice>::totalCost(k, cost);
     // Cost of reduction step accumulating the m*n per-thread buffers into the
     // result.
+    //减少步骤的成本，将m*n个线程缓冲区累加到结果中。
     double reduction_cost = TensorCostModel<ThreadPoolDevice>::totalCost(
         m * n, TensorOpCost(2, 1, 1, true, output_packet_size));
     int num_threads = 1;
     double min_cost = total_parallel_cost;
-    double kPerThreadOverHead = 3000;
-    double kFixedOverHead = 100000;
+    double kPerThreadOverHead = 3000;//每个线程的开销
+    double kFixedOverHead = 100000;//固定的开销
+    //通过循环增加线程数，找到成本最小的线程数
     for (int nt = 2; nt <= this->m_device.numThreads(); nt += 2) {
       double sequential_cost =
           kFixedOverHead + nt * (reduction_cost + kPerThreadOverHead);
@@ -1979,11 +2034,15 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
     return num_threads;
   }
 
+// 计算矩阵乘法的带宽，即数据传输速度与计算速度的比值
+// 参数shard_by_col：是否按列划分，bm：左矩阵的行数，bn：右矩阵的列数，bk：左矩阵的列数或右矩阵的行数（两者相等）
   double computeBandwidth(bool shard_by_col, Index bm, Index bn,
                           Index bk) const {
     // Peak VFMA bandwidth is 0.5. However if we have not enough data for
     // vectorization bandwidth drops. The 4.0 and 2.0 bandwidth is determined
     // experimentally.
+    // 峰值VFMA（向量浮点乘累加）带宽为0.5，但是如果数据量不足则带宽会降低。
+    // 实验确定4.0和2.0的带宽。
     double computeBandwidth =
         bk == 1 ? 4.0
                 : (shard_by_col ? bn : bm) < Traits::nr ||
@@ -1995,6 +2054,8 @@ Alignment：表示数据在内存中的对齐方式，通常是 16 字节或 32 
     // However for MULPS/ADDPS we have dependent sequence of 2 such
     // instructions,
     // so overall bandwidth is 1.0.
+    // 在最新的英特尔处理器上，VFMA / MULPS / ADDPS的带宽为0.5。
+    // 但是对于MULPS / ADDPS，我们有两个依赖序列的指令，因此总带宽为1.0。
     if (computeBandwidth == 0.5) computeBandwidth = 1.0;
 #endif
     return computeBandwidth;
