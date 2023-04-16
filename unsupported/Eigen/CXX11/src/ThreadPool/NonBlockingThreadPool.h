@@ -314,7 +314,7 @@ class ThreadPoolTempl : public Eigen::ThreadPoolInterface {
   std::unique_ptr<Barrier> init_barrier_;
   std::mutex per_thread_map_mutex_;  // Protects per_thread_map_.
   std::unordered_map<uint64_t, std::unique_ptr<PerThread>> per_thread_map_;
-#endif0
+#endif
 //并行线程池的类定义
 
   // Main worker thread loop.
